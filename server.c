@@ -23,6 +23,9 @@ struct HTTPRequest {
 };
 
 
+
+
+
 // function signatures
 
 /* called in main function before parsing
@@ -42,36 +45,49 @@ struct HTTPRequest parse(char *req);
  */
 int setup_listener(int port_no, int ip_addr, int backlog);
 
+/*
+ * Wait for a new connection from a client
+ * Returns the file descriptor of the new connection on success, or -1 on failure.
+ */
+int accept_connection(int listen_socket);
+
+/*
+ * Process the request and respond to the client. Intended for use after fork().
+ * client_index: the index of the client connection in active_connections[].
+ */
+void serve_client(int client_index, struct HTTPRequest request);
 
 
-// global variables
-int active_sockets[MAX_CONNECTIONS];
+/* Main function
+ * Create a web server that listens for HTTP requests and serves files.
+ */
+int main(int argc, char * argv[]) {
 
+  // check program arguments
+  if (argc != 5) {
+    fprintf(stderr,
+	    "usage: ./server [options]\n   options:\n"
+	    "    -document_root   root directory for serving files\n"
+	    "    -port            listening port for server\n"
+	    );
+    exit(1);
+  }
 
-int main() {
-
+  
   // get a socket for listening for new connections
   int listen_socket = setup_listener(PORTNO, INADDR_ANY, MAX_CONNECTIONS);
   if (listen_socket < 0) {
     fprintf(stderr, "Failed to setup listening socket. Port number may be busy.\n");
     exit(1);
   }
-  
-  int newsock;
-  struct sockaddr_in newsock_addr;
-  socklen_t newsock_len = sizeof(newsock);
-  memset((void*)&newsock, 0, sizeof(newsock));
 
-  newsock = accept(listen_socket, (struct sockaddr*) &newsock, &newsock_len);
-  if (newsock < 0) {
-    close(listen_socket);
-    fprintf(stderr, "Issue with accepting new connection.\n");
-  }
 
+  // wait for a client
+  int new_socket = accept_connection(listen_socket);
   fprintf(stdout, "Successfully accepted connection\n");
 
   // close all sockets
-  close(newsock);
+  close(new_socket);
   close(listen_socket);
   
   char *req;
@@ -141,4 +157,32 @@ int setup_listener(int port_no, int ip_addr, int backlog) {
   }
 
   return listen_sock;
+}
+
+
+/*
+ * Wait for a new connection from a client
+ * Returns the file descriptor of the new connection on success, or -1 on failure.
+ */
+int accept_connection(int listen_socket) {
+  int new_socket;
+  
+  struct sockaddr_in newsock_addr;
+  socklen_t newsock_len = sizeof(new_socket);
+  memset((void*)&new_socket, 0, sizeof(new_socket));
+
+  // block and wait for a new connection
+  new_socket = accept(listen_socket, (struct sockaddr*) &new_socket, &newsock_len);
+
+  // returns socket on success, or -1 if accept() failed
+  return new_socket;
+}
+
+/*
+ * Process the request and respond to the client. Intended for use after fork().
+ * client_index: the index of the client connection in active_connections[].
+ */
+void serve_client(int client_index, struct HTTPRequest request) {
+  // skeleton
+  return;
 }
