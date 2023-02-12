@@ -8,6 +8,7 @@
 #include <stdio.h> 
 #include <stdlib.h>
 #include <string.h>
+#include <err.h>
 
 // defines
 #define HTTP_10 0
@@ -52,10 +53,11 @@ int setup_listener(int port_no, int ip_addr, int backlog);
 int accept_connection(int listen_socket);
 
 /*
- * Process the request and respond to the client. Intended for use after fork().
- * client_index: the index of the client connection in active_connections[].
+ * Main procedure after fork()
+ * client: file desciptor for client connection
  */
-void serve_client(int client_index, struct HTTPRequest request);
+void serve_client(int client);
+
 
 
 /* Main function
@@ -82,12 +84,24 @@ int main(int argc, char * argv[]) {
   }
 
 
-  // wait for a client
-  int new_socket = accept_connection(listen_socket);
-  fprintf(stdout, "Successfully accepted connection\n");
+  // main server loop
+  for(int i = 0; i < 5; i++) {
+    // get new connection
+    int new_socket = accept_connection(listen_socket);
+    if (new_socket > 0) {
 
-  // close all sockets
-  close(new_socket);
+      // create a child process to serve the client
+      int pid = fork();
+      if (!pid) { // child
+	serve_client(new_socket);
+	exit(0);
+      }
+      else {      // parent
+	close(new_socket); 
+      }
+    }
+  }
+
   close(listen_socket);
   
   char *req;
@@ -135,7 +149,8 @@ int setup_listener(int port_no, int ip_addr, int backlog) {
   memset((void*)&bindaddr, 0, sizeof(bindaddr));
 
   // attempt to crete socket
-  if ((listen_sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+  // use CLOEXEC so child doesn't have access to main listening socket
+  if ((listen_sock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0) {
     return -1;
   }
 
@@ -179,10 +194,11 @@ int accept_connection(int listen_socket) {
 }
 
 /*
- * Process the request and respond to the client. Intended for use after fork().
- * client_index: the index of the client connection in active_connections[].
+ * Main procedure after fork()
+ * client: file desciptor for client connection
  */
-void serve_client(int client_index, struct HTTPRequest request) {
+void serve_client(int client) {
   // skeleton
-  return;
+  // exit(0) is because it is a process
+  exit(0);
 }
