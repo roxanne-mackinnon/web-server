@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <err.h>
+#include <getopt.h>
 
 // defines
 #define DEBUG 1
@@ -23,12 +24,13 @@
 #define PORTNO 9001
 #define MAX_CONNECTIONS 64
 #define MAX_MSG_LENGTH 512
+#define MAX_FILENAME_LENGTH 512
 #define BLOCKSIZE 4096
 
 
 // structs and typedefs
 struct HTTPRequest {
-  char filename[MAX_MSG_LENGTH];
+  char filename[MAX_FILENAME_LENGTH];
   int version;
 };
 
@@ -50,10 +52,15 @@ int is_valid_request(char *req);
 struct HTTPRequest parse(char *req);
 
 /*
+ * Parse command-line arguments -document_root and -port
+ */
+int parse_arguments(int arc, char *argv[], char *root, int *portno);
+
+/*
  * Procedure for setting up a listener socket
  * Returns positive listening socket file descriptor on success, -1 on failure.
  */
-int setup_listener(int port_no, int ip_addr, int backlog);
+int setup_listener(int port_no, int backlog);
 
 /*
  * Wait for a new connection from a client
@@ -87,7 +94,10 @@ void send_file(int client, int fd);
 int main(int argc, char * argv[]) {
 
   // check program arguments
-  if (argc != 5) {
+  char document_root[MAX_FILENAME_LENGTH];
+  int portno;
+  if (argc != 5
+      || (parse_arguments(argc, argv, document_root, &portno) < 0)) {
     fprintf(stderr,
 	    "usage: ./server [options]\n   options:\n"
 	    "    -document_root   root directory for serving files\n"
@@ -97,20 +107,20 @@ int main(int argc, char * argv[]) {
   }
 
 
-  // use getopt.h to get program arguments
+  if (chdir(document_root) < 0) {
+    fprintf(stderr, "Failed to move to document_root.\n");
+    exit(1);
+  }
   
-
   // get a socket for listening for new connections
-  int listen_socket = setup_listener(PORTNO, INADDR_ANY, MAX_CONNECTIONS);
+  int listen_socket = setup_listener(portno, MAX_CONNECTIONS);
   if (listen_socket < 0) {
     fprintf(stderr, "Failed to setup listening socket. Port number may be busy.\n");
     exit(1);
   }
 
-  printf("created listener\n");
-
   // main server loop
-  while(1) {
+  for(;;) {
     // get new connection
     int new_socket = accept_connection(listen_socket);
     printf("accepted\n");
@@ -137,6 +147,30 @@ int main(int argc, char * argv[]) {
 
 // function implementations
 
+/*
+ * Parse command-line arguments -document_root and -port
+ */
+int parse_arguments(int arc, char *argv[], char *root, int *portno) {
+  // if there are five arguments, the only valid possibilities are
+  // -document_root <filename> -port <portno>
+  // and
+  // -port <portno> -document_root <filename>
+
+  // if first arg is -document_root and second is -port
+  if (! (strcmp(argv[1], "-document_root") || strcmp(argv[3], "-port"))) {
+    strncpy(root, argv[2], MAX_FILENAME_LENGTH);
+    *portno = atoi(argv[4]);
+    return 0;
+  }
+  else if (! (strcmp(argv[3], "-document_root") || strcmp(argv[1], "-port"))) {
+    strncpy(root, argv[4], MAX_FILENAME_LENGTH);
+    *portno = atoi(argv[2]);
+    return 0;
+  }
+  
+  return -1;
+}
+
 /* called in main function before parsing
  * check if it has a potential file name and a valid version #
  * make sure it is a get request
@@ -160,7 +194,7 @@ struct HTTPRequest parse(char *req) {
  * Procedure for setting up a listener socket
  * Returns positive listening socket file descriptor on success, -1 on failure.
  */
-int setup_listener(int port_no, int ip_addr, int backlog) {
+int setup_listener(int port_no, int backlog) {
 
   // socket for listening for new connections
   int listen_sock;
@@ -185,7 +219,7 @@ int setup_listener(int port_no, int ip_addr, int backlog) {
   // initialize bindaddr
   bindaddr.sin_family = AF_INET;
   bindaddr.sin_port = htons(port_no);
-  bindaddr.sin_addr.s_addr = htonl(ip_addr);
+  bindaddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
   // attempt to bind listensock to a network address/port
   if (bind(listen_sock, (struct sockaddr*)&bindaddr, sizeof(bindaddr)) < 0) {
@@ -245,7 +279,7 @@ void serve_client(int client) {
     // CHANGE BACK TO httpreq.filename
     int fd;
     if (DEBUG) {
-      fd = open("test.txt", O_RDONLY);
+      fd = open("sysnet.html", O_RDONLY);
     }
     else {
       fd = open(httpreq.filename, O_RDONLY);
