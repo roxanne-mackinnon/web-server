@@ -176,6 +176,26 @@ int parse_arguments(int arc, char *argv[], char *root, int *portno) {
  * make sure it is a get request
  */
 int is_valid_request(char *req) {
+  const char *path_start = strchr(req, ' ') + 1;
+  const char *query_start = strchr(path_start, '?');
+  const char *query_end = strchr(query_start, ' ');
+
+  char path[query_start - path_start];
+  char query[query_end - query_start];
+
+  strncpy(path, path_start, query_start - path_start);
+  strncpy(query, query_start, query_end - query_start);
+  path[sizeof(path)] = 0;
+  query[sizeof(query)] = 0;
+  
+  char request[3];
+  strncpy(request, req, 3);
+
+  if(!strcmp(request, "GET")){
+    return -1;
+  }
+  // *** a bit confused about document root ***
+
   return 1;
 }
 
@@ -270,6 +290,8 @@ void serve_client(int client) {
 
   // look into message length
   int ret = recv(client, req, sizeof(req), 0);
+
+  
   
   if (ret >= 0 && is_valid_request(req)) {
     
