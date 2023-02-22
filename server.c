@@ -9,6 +9,8 @@
 #include <netinet/ip.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <signal.h>
+#include <poll.h>
 #include <fcntl.h>
 #include <stdio.h> 
 #include <stdlib.h>
@@ -66,17 +68,17 @@ int accept_connection(int listen_socket);
  */
 void serve_client(int client);
 
-/*
- *
- */
-void serve_request(int client, struct HTTPRequest req);
-
 
 /*
  * Check if the server is allowed to serve the file descriptor
  */
 int check_can_access(int fd);
 
+
+/*
+ * Fulfill the HTTP request, keeping the connection open
+ */
+void fulfill_request(int client, char *req, char *version);
 
 /*
  * Send a file to the client in blocks
@@ -173,13 +175,18 @@ int parse_arguments(int arc, char *argv[], char *root, int *portno) {
  * returns 0 if request is well-formed, -1 otherwise
  */
 int parse(char *req, struct HTTPRequest *httpreq) {
-  // this is just a skeleton to keep the compiler happy
-  
+  // for peace of mind
+  memset((void*)httpreq, 0, sizeof(struct HTTPRequest));
+
+  // parse HTTP request
+  // should get it to grab the first line ONLY and disgard all headers
   int n = sscanf(req, "GET /%ms HTTP/1.%[01]", &(httpreq->filename), &(httpreq->version));
   if (n != 2) {
+    free(httpreq->filename);
     return -1;
   }
   if (httpreq->version != HTTP_10 && httpreq->version != HTTP_11) {
+    free(httpreq->filename);
     return -1;
   }
   
@@ -264,59 +271,96 @@ void serve_client(int client) {
   char req[MAX_MSG_LENGTH];
   memset((void*)req, 0, sizeof(req));
 
+  char version = 0;
   // if we read any bytes
-  if (recv(client, req, sizeof(req), 0) >= 0) {
-    struct HTTPRequest httpreq;
-    if(parse(req, &httpreq) < 0) {
-      // send 400 error: bad request
-      const char header[] = "HTTP/1.0 400 Bad Request\n";
-      send(client, header, sizeof(header), 0);
-      // i dont think we need to sync it... im not sure
-      close(client);
-      exit(1);
-    }
-    
-    // open the file before stat-ing, so if it gets deleted we still have a reference.
-    // CHANGE BACK TO httpreq.filename
-    int fd;
-    fd = open(httpreq.filename, O_RDONLY);
-    // filename is dynamically allocated by scanf() so free it now
-    free(httpreq.filename);
-    
-    if (errno == ENOENT) {
-      // send 404 error, file not found
-      const char header[] = "HTTP/1.0 404 Not Found\n";
-      send(client, header, sizeof(header), 0);
-      close(client);
-      exit(1);
-      
-    }
-    
-    if (check_can_access(fd)) {
-      // send 200 status, OK
-      const char header[] = "HTTP/1.0 200 OK\n";
-      send(client, header, sizeof(header), 0);
+  // poll for 10 seconds before first request
+  struct pollfd poll_client = {.fd = client,
+			       .events = POLLIN,
+			       .revents = 0};
 
-      send_file(client, fd);
-    }
-    else {
-      // send 403 error, forbidden
-      const char header[] = "HTTP/1.0 403 Forbidden\n";
-      send(client, header, sizeof(header), 0);
-      close(client);
-      exit(1);
-
-    }
-
-    close(fd);
+  if (poll(&poll_client, 1, 10000) <= 0) {
+    shutdown(client, 0);
     close(client);
     exit(0);
   }
 
-  // should send an error message instead of exit(1);
+  // fulfillment loop
+  while (recv(client, req, sizeof(req), 0) >= 0) {
 
+    printf("%s\n", req);
+    fulfill_request(client, req, &version);
+    memset(req, 0, sizeof(req));
+    if (version == HTTP_11) {
+      if (poll(&poll_client, 1, 100) <= 0) {
+	// timeout
+	shutdown(client, 0);
+	close(client);
+	exit(0);
+      }
+      continue;
+    }
+    
+    else {
+      shutdown(client, 0);
+      close(client);
+      exit(0);
+    }
+
+  }
+
+  shutdown(client, 0);
   close(client);
-  exit(1);
+  exit(0);
+}
+
+/*
+ * Fulfill the HTTP request, keeping the connection open
+ */
+void fulfill_request(int client, char *req, char *version) {
+
+  struct HTTPRequest httpreq;
+  memset((void*)&httpreq, 0, sizeof(httpreq));
+  if(parse(req, &httpreq) < 0) {
+    // send 400 error: bad request
+    const char header[] = "HTTP/1.0 400 Bad Request\n";
+    send(client, header, sizeof(header), 0);
+    return;
+  }
+
+  *version = httpreq.version;
+  // open the file before stat-ing, so if it gets deleted we still have a reference.
+  int fd;
+  if (httpreq.filename != NULL) {
+    fd = open(httpreq.filename, O_RDONLY);
+    // filename is dynamically allocated by scanf() so free it now
+    free(httpreq.filename);
+  }
+  else {
+    httpreq.filename = "sysnet.html";
+  }
+    
+  if (errno == ENOENT) {
+    // send 404 error, file not found
+    const char header[] = "HTTP/1.0 404 Not Found\n";
+    send(client, header, sizeof(header), 0);
+    return;
+  }
+    
+  if (check_can_access(fd)) {
+    // send 200 status, OK
+    const char header[] = "HTTP/1.0 200 OK\n";
+    send(client, header, sizeof(header), 0);
+    send_file(client, fd);
+      
+    return;
+  }
+    
+  else {
+    // send 403 error, forbidden
+    const char header[] = "HTTP/1.0 403 Forbidden\n";
+    send(client, header, sizeof(header), 0);
+    return;
+  }
 }
 
 /*
@@ -332,7 +376,8 @@ void send_file(int client, int fd) {
     send(client, buf, num_read, 0);
     memset((void*)buf, 0, sizeof(buf));
   }
-  
+
+  close(fd);
 }
 
 
