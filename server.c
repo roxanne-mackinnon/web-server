@@ -18,7 +18,6 @@
 #include <getopt.h>
 
 // defines
-#define DEBUG 1
 #define HTTP_10 '0'
 #define HTTP_11 '1'
 #define LISTEN_BACKLOG 10
@@ -27,6 +26,7 @@
 #define MAX_MSG_LENGTH 512
 #define MAX_FILENAME_LENGTH 512
 #define BLOCKSIZE 4096
+#define MAXTIME 10000
 
 
 // structs and typedefs
@@ -36,16 +36,7 @@ struct HTTPRequest {
 };
 
 
-
-
-
 // function signatures
-
-/* called in main function before parsing
- * check if it has a potential file name and a valid version #
- * make sure it is a get request
- */
-int is_valid_request(char *req);
 
 /*
  * takes a valid request and parses it into a struct
@@ -76,6 +67,12 @@ int accept_connection(int listen_socket);
 void serve_client(int client);
 
 /*
+ *
+ */
+void serve_request(int client, struct HTTPRequest req);
+
+
+/*
  * Check if the server is allowed to serve the file descriptor
  */
 int check_can_access(int fd);
@@ -85,7 +82,6 @@ int check_can_access(int fd);
  * Send a file to the client in blocks
  */
 void send_file(int client, int fd);
-
 
 
 
@@ -268,12 +264,8 @@ void serve_client(int client) {
   char req[MAX_MSG_LENGTH];
   memset((void*)req, 0, sizeof(req));
 
-  // look into message length
-  int ret = recv(client, req, sizeof(req), 0);
-
   // if we read any bytes
-  if (ret >= 0) {
-    
+  if (recv(client, req, sizeof(req), 0) >= 0) {
     struct HTTPRequest httpreq;
     if(parse(req, &httpreq) < 0) {
       // send 400 error: bad request
@@ -288,6 +280,9 @@ void serve_client(int client) {
     // CHANGE BACK TO httpreq.filename
     int fd;
     fd = open(httpreq.filename, O_RDONLY);
+    // filename is dynamically allocated by scanf() so free it now
+    free(httpreq.filename);
+    
     if (errno == ENOENT) {
       // send 404 error, file not found
       const char header[] = "HTTP/1.0 404 Not Found\n";
@@ -330,13 +325,8 @@ void serve_client(int client) {
 void send_file(int client, int fd) {
   char buf[BLOCKSIZE];
   memset((void*)buf, 0, sizeof(buf));
-  // write checks later
-
 
   // send file loop
-
-  // it might be a good idea to check for errors and send an error
-  // response if something gets interrupted midmessage
   int num_read = 0;
   while ((num_read = read(fd, buf, BLOCKSIZE)) > 0) {
     send(client, buf, num_read, 0);
