@@ -187,7 +187,7 @@ int main(int argc, char * argv[]) {
     }
     if (counter == 255) {
       // wait any exited child process without hanging
-      while (waitpid(-1, NULL, WNOHANG) != 0);
+      while (waitpid(-1, NULL, WNOHANG) > 0);
     }
     counter++;
   }
@@ -329,7 +329,7 @@ void serve_client(int client) {
 
   // poll for 10 seconds before first request
   struct pollfd poll_client = {.fd = client, .events = POLLIN, .revents = 0};
-  if (poll(&poll_client, 1, 10000) <= 0) {
+  if (poll(&poll_client, 1, 1000) <= 0) {
     shutdown(client, 0);
     close(client);
     exit(0);
@@ -341,7 +341,7 @@ void serve_client(int client) {
     fulfill_request(client, req, &version);
     memset(req, 0, sizeof(req));
     if (version == HTTP_11) {
-      if (poll(&poll_client, 1, 10000) <= 0) {
+      if (poll(&poll_client, 1, 200) <= 0) {
 	// timeout
 	shutdown(client, 0);
 	close(client);
