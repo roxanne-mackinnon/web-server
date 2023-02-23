@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <poll.h>
+#include <time.h>
 #include <fcntl.h>
 #include <stdio.h> 
 #include <stdlib.h>
@@ -25,8 +26,7 @@
 #define LISTEN_BACKLOG 10
 #define PORTNO 9001
 #define MAX_CONNECTIONS 64
-#define MAX_MSG_LENGTH 512
-#define MAX_FILENAME_LENGTH 512
+#define MAX_MSG_LENGTH 1024
 #define BLOCKSIZE 4096
 #define MAXTIME 10000
 
@@ -36,6 +36,42 @@ struct HTTPRequest {
   char *filename;
   char version;
 };
+
+typedef enum HTTPCode {CODE_200, CODE_400, CODE_403, CODE_404} HTTPCode;
+
+const char code_message[][32] =
+  {
+   [CODE_200] = "OK\n",
+   [CODE_400] = "Bad Request\n",
+   [CODE_403] = "Forbidden\n",
+   [CODE_404] = "Not Found\n"
+  };
+const int code_value[] =
+  {
+   [CODE_200] = 200,
+   [CODE_400] = 400,
+   [CODE_403] = 403,
+   [CODE_404] = 404
+  };
+
+typedef enum HTTPType {TEXT_PLAIN, TEXT_HTML, IMAGE_JPEG, IMAGE_GIF} HTTPType;
+const char content_types[][32] =
+  {
+   [TEXT_HTML] = "text/html",
+   [TEXT_PLAIN] = "text/plain",
+   [IMAGE_JPEG] = "image/jpeg",
+   [IMAGE_GIF] = "image/gif"
+  };
+
+
+struct HTTPHeaders {
+  long content_length;
+  HTTPCode code;  
+  HTTPType type;
+  char version;
+};
+
+
 
 
 // function signatures
@@ -48,7 +84,7 @@ int parse(char *req, struct HTTPRequest *httpreq);
 /*
  * Parse command-line arguments -document_root and -port
  */
-int parse_arguments(int arc, char *argv[], char *root, int *portno);
+int parse_arguments(int arc, char *argv[], char **root, int *portno);
 
 /*
  * Procedure for setting up a listener socket
@@ -71,14 +107,21 @@ void serve_client(int client);
 
 /*
  * Check if the server is allowed to serve the file descriptor
+ * Return the size of the file in bytes, or -1 if not world-readable
  */
-int check_can_access(int fd);
+long check_access(int fd);
 
 
 /*
  * Fulfill the HTTP request, keeping the connection open
  */
 void fulfill_request(int client, char *req, char *version);
+
+/*
+ * Send content-type, content-length, and date headers
+ */
+void send_headers(int client, struct HTTPHeaders head);
+
 
 /*
  * Send a file to the client in blocks
@@ -93,10 +136,10 @@ void send_file(int client, int fd);
 int main(int argc, char * argv[]) {
 
   // check program arguments
-  char document_root[MAX_FILENAME_LENGTH];
+  char *document_root;
   int portno;
   if (argc != 5
-      || (parse_arguments(argc, argv, document_root, &portno) < 0)) {
+      || (parse_arguments(argc, argv, &document_root, &portno) < 0)) {
     fprintf(stderr,
 	    "usage: ./server [options]\n   options:\n"
 	    "    -document_root   root directory for serving files\n"
@@ -122,7 +165,6 @@ int main(int argc, char * argv[]) {
   for(;;) {
     // get new connection
     int new_socket = accept_connection(listen_socket);
-    printf("accepted\n");
     if (new_socket > 0) {
 
       // create a child process to serve the client
@@ -149,7 +191,7 @@ int main(int argc, char * argv[]) {
 /*
  * Parse command-line arguments -document_root and -port
  */
-int parse_arguments(int arc, char *argv[], char *root, int *portno) {
+int parse_arguments(int arc, char *argv[], char **root, int *portno) {
   // if there are five arguments, the only valid possibilities are
   // -document_root <filename> -port <portno>
   // and
@@ -157,12 +199,12 @@ int parse_arguments(int arc, char *argv[], char *root, int *portno) {
 
   // if first arg is -document_root and second is -port
   if (! (strcmp(argv[1], "-document_root") || strcmp(argv[3], "-port"))) {
-    strncpy(root, argv[2], MAX_FILENAME_LENGTH);
+    *root = argv[2];
     *portno = atoi(argv[4]);
     return 0;
   }
   else if (! (strcmp(argv[3], "-document_root") || strcmp(argv[1], "-port"))) {
-    strncpy(root, argv[4], MAX_FILENAME_LENGTH);
+    *root = argv[4];
     *portno = atoi(argv[2]);
     return 0;
   }
@@ -251,7 +293,6 @@ int accept_connection(int listen_socket) {
   socklen_t newsock_len = sizeof(newsock_addr);
   memset((void*)&newsock_addr, 0, sizeof(newsock_addr));
 
-  printf("waiting\n");
   // block and wait for a new connection
   new_socket = accept(listen_socket, (struct sockaddr*) &newsock_addr, &newsock_len);
 
@@ -272,12 +313,9 @@ void serve_client(int client) {
   memset((void*)req, 0, sizeof(req));
 
   char version = 0;
-  // if we read any bytes
-  // poll for 10 seconds before first request
-  struct pollfd poll_client = {.fd = client,
-			       .events = POLLIN,
-			       .revents = 0};
 
+  // poll for 10 seconds before first request
+  struct pollfd poll_client = {.fd = client, .events = POLLIN, .revents = 0};
   if (poll(&poll_client, 1, 10000) <= 0) {
     shutdown(client, 0);
     close(client);
@@ -287,7 +325,6 @@ void serve_client(int client) {
   // fulfillment loop
   while (recv(client, req, sizeof(req), 0) >= 0) {
 
-    printf("%s\n", req);
     fulfill_request(client, req, &version);
     memset(req, 0, sizeof(req));
     if (version == HTTP_11) {
@@ -314,20 +351,30 @@ void serve_client(int client) {
 }
 
 /*
+ *
+ */
+
+/*
  * Fulfill the HTTP request, keeping the connection open
  */
 void fulfill_request(int client, char *req, char *version) {
 
+  /*
+   * headers: text/html, text/plain, image/jpeg, image/gif
+   */
+
+  // parse the request, send 400 response if invalid.
   struct HTTPRequest httpreq;
+  struct HTTPHeaders httprsp;
   memset((void*)&httpreq, 0, sizeof(httpreq));
+  memset((void*)&httprsp, 0, sizeof(httprsp));
   if(parse(req, &httpreq) < 0) {
     // send 400 error: bad request
-    const char header[] = "HTTP/1.0 400 Bad Request\n";
-    send(client, header, sizeof(header), 0);
+    httprsp.code = CODE_400;
+    send_headers(client, httprsp);
     return;
   }
 
-  *version = httpreq.version;
   // open the file before stat-ing, so if it gets deleted we still have a reference.
   int fd;
   if (httpreq.filename != NULL) {
@@ -336,25 +383,28 @@ void fulfill_request(int client, char *req, char *version) {
     free(httpreq.filename);
   }
   else {
-    httpreq.filename = "sysnet.html";
+    httpreq.filename = "index.html";
   }
-    
+
+  // send 404 error, file not found
   if (errno == ENOENT) {
-    // send 404 error, file not found
     const char header[] = "HTTP/1.0 404 Not Found\n";
     send(client, header, sizeof(header), 0);
     return;
   }
-    
-  if (check_can_access(fd)) {
+
+  // ensure the file is world-readable
+  long fsize;
+  if ((fsize = check_access(fd)) > 0) {
     // send 200 status, OK
-    const char header[] = "HTTP/1.0 200 OK\n";
-    send(client, header, sizeof(header), 0);
+    
+    httprsp.code = CODE_200;
+    httprsp.content_length = fsize;
+    
+    send_headers(client, httprsp);
     send_file(client, fd);
-      
     return;
   }
-    
   else {
     // send 403 error, forbidden
     const char header[] = "HTTP/1.0 403 Forbidden\n";
@@ -382,22 +432,49 @@ void send_file(int client, int fd) {
 
 
 /*
- * Check if the server is allowed to serve the file descriptor
+ * Send content-type, content-length, and date headers
  */
-int check_can_access(int fd) {
+void send_headers(int client, struct HTTPHeaders head) {
+  char buf[MAX_MSG_LENGTH];
+  memset(buf, 0, sizeof(buf));
+  sprintf(buf, "HTTP/1.%c %d %s",
+	  head.version,
+	  code_value[head.code],
+	  code_message[head.code]);
+  
+  send(client, buf, strlen(buf), 0);
+
+  time_t t = time(NULL);
+  sprintf(buf,
+	  "Content-Type: %s\n"
+	  "Content-Length: %ld\n"
+	  "Date: %s\n",
+	  content_types[head.code],
+	  head.content_length,
+	  ctime(&t));
+  send(client, buf, strlen(buf), 0);
+}
+
+
+
+/*
+ * Check if the server is allowed to serve the file descriptor
+ * Return the size of the file in bytes, or -1 if not world-readable
+ */
+long check_access(int fd) {
 
   // MUST ACCOUNT FOR .. UP DIRECTORY FILE
   struct stat pathstat;
 
   if (fstat(fd, &pathstat) < 0) {
     // something went wrong, cant access
-    return 0;
+    return -1;
   }
 
   // ensure the file is everyone-readable
   if (pathstat.st_mode & S_IROTH) {
-    return 1;
+    return pathstat.st_size;
   }
 
-  return 0;
+  return -1;
 }
