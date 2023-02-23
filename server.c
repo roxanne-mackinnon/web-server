@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <arpa/inet.h>
@@ -99,6 +100,11 @@ int setup_listener(int port_no, int backlog);
 int accept_connection(int listen_socket);
 
 /*
+ * Extract the HTTP mime type from the name of the file.
+ */
+HTTPType http_file_type(char *fname);
+
+/*
  * Main procedure after fork()
  * client: file desciptor for client connection
  */
@@ -161,6 +167,8 @@ int main(int argc, char * argv[]) {
     exit(1);
   }
 
+  // when this counter reaches 256, clear any zombie processes.
+  unsigned char counter = 0;
   // main server loop
   for(;;) {
     // get new connection
@@ -177,6 +185,11 @@ int main(int argc, char * argv[]) {
 	close(new_socket);
       }
     }
+    if (counter == 255) {
+      // wait any exited child process without hanging
+      while (waitpid(-1, NULL, WNOHANG) != 0);
+    }
+    counter++;
   }
 
   close(listen_socket);
@@ -328,7 +341,7 @@ void serve_client(int client) {
     fulfill_request(client, req, &version);
     memset(req, 0, sizeof(req));
     if (version == HTTP_11) {
-      if (poll(&poll_client, 1, 100) <= 0) {
+      if (poll(&poll_client, 1, 10000) <= 0) {
 	// timeout
 	shutdown(client, 0);
 	close(client);
@@ -371,10 +384,15 @@ void fulfill_request(int client, char *req, char *version) {
   if(parse(req, &httpreq) < 0) {
     // send 400 error: bad request
     httprsp.code = CODE_400;
+    httprsp.version = HTTP_10;
     send_headers(client, httprsp);
     return;
   }
 
+  // set version so calling function has it
+  *version = httpreq.version;
+  httprsp.version = httpreq.version;
+  httprsp.type = http_file_type(httpreq.filename);
   // open the file before stat-ing, so if it gets deleted we still have a reference.
   int fd;
   if (httpreq.filename != NULL) {
@@ -384,12 +402,13 @@ void fulfill_request(int client, char *req, char *version) {
   }
   else {
     httpreq.filename = "index.html";
+    httprsp.type = TEXT_HTML;
   }
 
   // send 404 error, file not found
   if (errno == ENOENT) {
-    const char header[] = "HTTP/1.0 404 Not Found\n";
-    send(client, header, sizeof(header), 0);
+    httprsp.code = CODE_404;
+    send_headers(client, httprsp);
     return;
   }
 
@@ -406,10 +425,32 @@ void fulfill_request(int client, char *req, char *version) {
     return;
   }
   else {
-    // send 403 error, forbidden
-    const char header[] = "HTTP/1.0 403 Forbidden\n";
-    send(client, header, sizeof(header), 0);
+    httprsp.code = CODE_403;
+    httprsp.content_length = 0;
+    send_headers(client, httprsp);
     return;
+  }
+}
+
+/*
+ * Extract the HTTP mime type from the name of the file.
+ */
+HTTPType http_file_type(char *fname) {
+  char *s = strrchr(fname, '.');
+  if (s == NULL) {
+    return TEXT_PLAIN;
+  }
+  if (!strncmp(s, ".html", 5)) {
+    return TEXT_HTML;
+  }
+  if (!strncmp(s, ".txt", 4)) {
+    return TEXT_PLAIN;
+  }
+  if (!strncmp(s, ".jpeg", 5) || !strncmp(s, ".jpg", 5)) {
+    return IMAGE_JPEG;
+  }
+  if (!strncmp(s, ".gif", 4)) {
+    return IMAGE_GIF;
   }
 }
 
@@ -449,7 +490,7 @@ void send_headers(int client, struct HTTPHeaders head) {
 	  "Content-Type: %s\n"
 	  "Content-Length: %ld\n"
 	  "Date: %s\n",
-	  content_types[head.code],
+	  content_types[head.type],
 	  head.content_length,
 	  ctime(&t));
   send(client, buf, strlen(buf), 0);
