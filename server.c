@@ -55,13 +55,22 @@ const int code_value[] =
    [CODE_404] = 404
   };
 
-typedef enum HTTPType {TEXT_PLAIN, TEXT_HTML, IMAGE_JPEG, IMAGE_GIF} HTTPType;
+typedef enum HTTPType {
+  TEXT_PLAIN,
+  TEXT_HTML,
+  TEXT_JAVASCRIPT,
+  IMAGE_JPEG,
+  IMAGE_GIF,
+  APPLICATION_WASM
+} HTTPType;
 const char content_types[][32] =
   {
    [TEXT_HTML] = "text/html",
    [TEXT_PLAIN] = "text/plain",
+   [TEXT_JAVASCRIPT] = "text/javascript",
    [IMAGE_JPEG] = "image/jpeg",
-   [IMAGE_GIF] = "image/gif"
+   [IMAGE_GIF] = "image/gif",
+   [APPLICATION_WASM] = "application/wasm",
   };
 
 
@@ -446,12 +455,19 @@ HTTPType http_file_type(char *fname) {
   if (!strncmp(s, ".txt", 4)) {
     return TEXT_PLAIN;
   }
+  if (!strncmp(s, ".js", 4)) {
+    return TEXT_JAVASCRIPT;
+  }
+  
   if (!strncmp(s, ".jpeg", 5) || !strncmp(s, ".jpg", 5)) {
     return IMAGE_JPEG;
   }
   if (!strncmp(s, ".gif", 4)) {
     return IMAGE_GIF;
   }
+  if (!strncmp(s, ".wasm", 5)) {
+    return APPLICATION_WASM;
+  }  
 }
 
 /*
